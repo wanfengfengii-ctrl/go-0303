@@ -117,32 +117,81 @@ func (m *Manager) Allocate(req AllocateRequest) (AllocateResult, error) {
 	return out, nil
 }
 
-// AcquireLease obtains a time-bounded single-holder lease.
+// AcquireLease obtains a time-bounded single-holder lease. It is idempotent by
+// OperationID and content hash: a retry with the same operation id and the same
+// lease request replays the committed lease; a retry that changes the request
+// (e.g. a different holder or window) is rejected with idempotent_conflict and
+// leaves the lease unchanged.
 func (m *Manager) AcquireLease(req LeaseRequest) (domain.ResourceLease, error) {
+	return m.applyLeaseTx(req, false)
+}
+
+// RenewLease extends a lease; only the current holder may renew. It carries the
+// same operation-id idempotency and conflict semantics as AcquireLease.
+func (m *Manager) RenewLease(req LeaseRequest) (domain.ResourceLease, error) {
+	return m.applyLeaseTx(req, true)
+}
+
+// applyLeaseTx runs the lease transition inside a serialized transaction,
+// guarded by the operation-id idempotency barrier so a reused operation_id can
+// never silently retake or rehand a lease.
+func (m *Manager) applyLeaseTx(req LeaseRequest, renew bool) (domain.ResourceLease, error) {
+	hash := contentHash(struct {
+		Kind       string
+		Resource   domain.ResourceKind
+		ResourceID string
+		Holder     string
+		Start      int64
+		End        int64
+	}{acquireKind(renew), req.Resource, req.ResourceID, req.Holder, req.Start, req.End})
+
 	var lease domain.ResourceLease
 	err := m.db.WithTx(context.Background(), func(tx *store.Tx) error {
-		l, err := applyLease(context.Background(), tx, req, false)
+		ctx := context.Background()
+
+		// Idempotency barrier: a committed operation_id is replayed on identical
+		// content and rejected (without mutating the lease) on divergent content.
+		if rc, err := tx.FindReceipt(ctx, req.OperationID); err != nil {
+			return err
+		} else if rc != nil {
+			if rc.ContentHash == hash {
+				return decodeLease(rc.Result, &lease)
+			}
+			return &domain.Error{Code: domain.CodeIdempotentConflict, Operation: req.OperationID,
+				Reasons: []domain.Reason{{Code: domain.CodeIdempotentConflict, Message: "operation id reused with different content"}}}
+		}
+
+		l, err := applyLease(ctx, tx, req, renew)
 		if err != nil {
 			return err
 		}
 		lease = l
+		if _, err := tx.SaveReceipt(ctx, req.OperationID, hash, encodeLease(l)); err != nil {
+			return err
+		}
 		return tx.AppendEvent(store.Event{Operation: req.OperationID, Kind: store.KindLease, Payload: lease})
 	})
 	return lease, err
 }
 
-// RenewLease extends a lease; only the current holder may renew.
-func (m *Manager) RenewLease(req LeaseRequest) (domain.ResourceLease, error) {
-	var lease domain.ResourceLease
-	err := m.db.WithTx(context.Background(), func(tx *store.Tx) error {
-		l, err := applyLease(context.Background(), tx, req, true)
-		if err != nil {
-			return err
-		}
-		lease = l
-		return tx.AppendEvent(store.Event{Operation: req.OperationID, Kind: store.KindLease, Payload: lease})
-	})
-	return lease, err
+// acquireKind returns the canonical operation kind for a lease request so that
+// acquire and renew on the same payload hash to distinct digests.
+func acquireKind(renew bool) string {
+	if renew {
+		return "renew"
+	}
+	return "acquire"
+}
+
+// encodeLease serializes a committed lease as an idempotent receipt result.
+func encodeLease(l domain.ResourceLease) string {
+	b, _ := json.Marshal(l)
+	return string(b)
+}
+
+// decodeLease reconstructs a lease from a stored receipt.
+func decodeLease(result string, out *domain.ResourceLease) error {
+	return json.Unmarshal([]byte(result), out)
 }
 
 // LookupLease returns the current lease for a resource, or nil.
