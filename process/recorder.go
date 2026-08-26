@@ -26,14 +26,20 @@ func NewRecorder(db *store.DB) *Recorder {
 // Record appends one process, bolt-stage or geometry evidence event, enforcing
 // the locked dependency chain. It is idempotent by operation id.
 func (r *Recorder) Record(req EvidenceRequest) (domain.OperationReceipt, error) {
+	// The content hash must include the ring identity: two distinct ring tasks
+	// that happen to reuse the same operation id are NOT idempotent replays of
+	// each other. Omitting RingID lets the second ring silently inherit the
+	// first ring's receipt without recording its own evidence, so the process
+	// prefix never advances even though the API returns success.
 	hash := contentHash(struct {
+		RingID      string
 		Generation  domain.Generation
 		LogicalTime int64
 		Operator    string
 		Process     *domain.ProcessEvidence
 		Bolt        *domain.BoltStageEvidence
 		Geometry    *domain.GeometryEvidence
-	}{req.Generation, req.LogicalTime, req.Operator, req.Process, req.Bolt, req.Geometry})
+	}{req.RingID, req.Generation, req.LogicalTime, req.Operator, req.Process, req.Bolt, req.Geometry})
 
 	var receipt domain.OperationReceipt
 	err := r.db.WithTx(context.Background(), func(tx *store.Tx) error {
@@ -221,14 +227,18 @@ func checkLease(ctx context.Context, tx *store.Tx, req EvidenceRequest, res doma
 // pending retry record and never advances state; exceeding the retry limit
 // becomes an anomaly. Idempotent by operation id.
 func (r *Recorder) RecordDeviceAttempt(req DeviceAttemptRequest) (domain.DeviceAttempt, error) {
+	// RingID must be part of the content hash so a reused operation id against a
+	// different ring is treated as a content conflict, not a silent replay that
+	// returns the first ring's receipt without recording device evidence here.
 	hash := contentHash(struct {
+		RingID      string
 		Generation  domain.Generation
 		DeviceType  string
 		CallNo      int
 		LogicalTime int64
 		FaultCode   string
 		Reading     *domain.Fixed
-	}{req.Generation, req.DeviceType, req.CallNo, req.LogicalTime, req.FaultCode, req.Reading})
+	}{req.RingID, req.Generation, req.DeviceType, req.CallNo, req.LogicalTime, req.FaultCode, req.Reading})
 
 	var out domain.DeviceAttempt
 	err := r.db.WithTx(context.Background(), func(tx *store.Tx) error {

@@ -25,14 +25,20 @@ func NewManager(db *store.DB) *Manager {
 // recording conservation ledger rows, single-slot binding and any required
 // lease. It is idempotent by OperationID and content hash.
 func (m *Manager) Allocate(req AllocateRequest) (AllocateResult, error) {
+	// RingID must be part of the content hash: the same operation id replayed
+	// against a different ring is a content conflict, not an idempotent replay.
+	// Without it, a second ring reusing the first ring's operation id would
+	// inherit the first ring's receipt without recording its own ledger or
+	// binding, so the material allocation silently never happens.
 	hash := contentHash(struct {
+		RingID        string
 		Generation    domain.Generation
 		Slot          domain.SegmentSlot
 		GasketBar     domain.GasketBar
 		Allocations   []domain.GasketAllocation
 		AdhesiveIssue domain.AdhesiveIssue
 		Lease         *domain.ResourceLease
-	}{req.Generation, req.Slot, req.GasketBar, req.Allocations, req.AdhesiveIssue, req.Lease})
+	}{req.RingID, req.Generation, req.Slot, req.GasketBar, req.Allocations, req.AdhesiveIssue, req.Lease})
 
 	var out AllocateResult
 	err := m.db.WithTx(context.Background(), func(tx *store.Tx) error {
