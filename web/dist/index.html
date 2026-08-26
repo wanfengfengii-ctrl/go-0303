@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>整环密封拼装看板</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>盾构隧道预制管片密封拼环与同步注浆准入</h1>
+    <p class="sub">整环看板 · 材料账 · 工序证据 · 检漏轨迹 · 终局裁定</p>
+  </header>
+  <main>
+    <section class="panel" id="health-panel">
+      <h2>后端状态</h2>
+      <pre id="health"></pre>
+      <button id="refresh">刷新</button>
+      <button id="lock">锁定任务</button>
+    </section>
+    <section class="panel">
+      <h2>规则目录</h2>
+      <pre id="catalog" class="placeholder">加载中…</pre>
+    </section>
+    <section class="panel">
+      <h2>闭环图</h2>
+      <pre id="graph" class="placeholder">尚未锁定任务。提交锁定请求后展示闭环图。</pre>
+    </section>
+    <section class="panel">
+      <h2>材料守恒表</h2>
+      <table id="ledger"><thead><tr><th>账目</th><th>增量</th><th>操作号</th></tr></thead><tbody></tbody></table>
+    </section>
+    <section class="panel">
+      <h2>资源租约</h2>
+      <ul id="leases" class="placeholder"></ul>
+    </section>
+    <section class="panel">
+      <h2>终局裁定</h2>
+      <pre id="terminal" class="placeholder">暂无终局。</pre>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
