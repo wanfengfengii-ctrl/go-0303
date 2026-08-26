@@ -219,7 +219,11 @@ func checkLease(ctx context.Context, tx *store.Tx, req EvidenceRequest, res doma
 
 // RecordDeviceAttempt appends a scripted device call. A fault only produces a
 // pending retry record and never advances state; exceeding the retry limit
-// becomes an anomaly. Idempotent by operation id.
+// becomes an anomaly. The fault record, idempotent receipt and audit event are
+// always committed, including on retry-exceeded, so the call that carried the
+// device into the anomaly state is durable and traceable across a restart; the
+// retry-exceeded error is then returned out-of-band without rolling the
+// transaction back. Idempotent by operation id.
 func (r *Recorder) RecordDeviceAttempt(req DeviceAttemptRequest) (domain.DeviceAttempt, error) {
 	hash := contentHash(struct {
 		Generation  domain.Generation
@@ -231,6 +235,7 @@ func (r *Recorder) RecordDeviceAttempt(req DeviceAttemptRequest) (domain.DeviceA
 	}{req.Generation, req.DeviceType, req.CallNo, req.LogicalTime, req.FaultCode, req.Reading})
 
 	var out domain.DeviceAttempt
+	var retryErr *domain.Error
 	err := r.db.WithTx(context.Background(), func(tx *store.Tx) error {
 		ctx := context.Background()
 
@@ -276,8 +281,13 @@ func (r *Recorder) RecordDeviceAttempt(req DeviceAttemptRequest) (domain.DeviceA
 			return err
 		}
 
+		// Exceeding the retry limit is an anomaly outcome, not a failed write:
+		// the fault record, idempotent receipt and audit event must be committed
+		// so the call that carried the device into the anomaly state is durable
+		// and traceable across a restart. We persist everything, then surface the
+		// retry-exceeded error out-of-band without rolling the transaction back.
 		if req.FaultCode != "" && retrySeq >= task.Rule.Thresholds.RetryLimit {
-			return &domain.Error{Code: domain.CodeRetryExceeded, Operation: req.OperationID,
+			retryErr = &domain.Error{Code: domain.CodeRetryExceeded, Operation: req.OperationID,
 				Reasons: []domain.Reason{{Code: domain.CodeRetryExceeded, Message: "device retry limit exceeded"}}}
 		}
 
@@ -288,6 +298,9 @@ func (r *Recorder) RecordDeviceAttempt(req DeviceAttemptRequest) (domain.DeviceA
 	})
 	if err != nil {
 		return domain.DeviceAttempt{}, err
+	}
+	if retryErr != nil {
+		return out, retryErr
 	}
 	return out, nil
 }
