@@ -1,0 +1,11 @@
+{
+  "name": "shield-tunnel-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "盾构隧道预制管片密封拼环与同步注浆准入闭环前端看板",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {}
+}
