@@ -202,12 +202,21 @@ func (a *Arbiter) Decide(req DecisionRequest) (domain.TerminalDecision, error) {
 			return conflict(req.OperationID)
 		}
 
-		// Fast path: an irreversible terminal already exists.
+		// Fast path: an irreversible terminal already exists. Losers read the
+		// committed decision regardless of the generation they carry.
 		if existing, err := tx.FindTerminal(ctx, req.RingID); err != nil {
 			return err
 		} else if existing != nil {
 			out = *existing
 			return nil
+		}
+
+		// Before competing to write a new terminal, the submitted generation
+		// must match the ring's current generation. Otherwise a stale caller
+		// could commit the terminal against the wrong generation and preempt
+		// the live generation's terminal competition.
+		if err := checkRing(ctx, tx, req.RingID, req.Generation, req.OperationID); err != nil {
+			return err
 		}
 
 		if req.Kind != "admit" && req.Kind != "isolate" && req.Kind != "cancel" {
