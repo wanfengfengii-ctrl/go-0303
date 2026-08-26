@@ -63,6 +63,24 @@ func (m *Manager) Allocate(req AllocateRequest) (AllocateResult, error) {
 				Reasons: []domain.Reason{{Code: domain.CodeStaleGeneration, Generation: req.Generation, Message: "stale generation"}}}
 		}
 
+		// Optional required lease: verify the persisted lease is still held by
+		// the declared holder and valid at the allocation's logical time. This
+		// mirrors the check performed when recording evidence, so allocation is
+		// rejected under the same conditions a later evidence step would be.
+		// Doing this before any binding or ledger write keeps material state
+		// consistent with lease state.
+		if req.Lease != nil {
+			lease, err := tx.FindLease(ctx, req.Lease.Resource, req.Lease.ResourceID)
+			if err != nil {
+				return err
+			}
+			if lease == nil || lease.Holder != req.Lease.Holder ||
+				req.LogicalTime < lease.Start || req.LogicalTime >= lease.End {
+				return &domain.Error{Code: domain.CodeLeaseExpired, Operation: req.OperationID,
+					Reasons: []domain.Reason{{Code: domain.CodeLeaseExpired, Message: "required lease missing, expired or held by another operator"}}}
+			}
+		}
+
 		// Conservation invariants.
 		var reasons []domain.Reason
 		reasons = append(reasons, validateGasket(req.GasketBar, req.Allocations)...)
