@@ -193,6 +193,12 @@ func (a *Arbiter) Decide(req DecisionRequest) (domain.TerminalDecision, error) {
 	var out domain.TerminalDecision
 	err := a.db.WithTx(context.Background(), func(tx *store.Tx) error {
 		ctx := context.Background()
+		// Idempotency by operation id: identical content replays the original
+		// receipt, different content is an idempotent-conflict. This must run
+		// before the existing-terminal fast path so that a losing competitor
+		// (or any replay) is bound to its operation id exactly like a winner,
+		// and a later content-tampered replay of the same operation id is
+		// detectable rather than silently returning the existing terminal.
 		if rc, err := tx.FindReceipt(ctx, req.OperationID); err != nil {
 			return err
 		} else if rc != nil {
@@ -200,14 +206,6 @@ func (a *Arbiter) Decide(req DecisionRequest) (domain.TerminalDecision, error) {
 				return decodeDecision(rc.Result, &out)
 			}
 			return conflict(req.OperationID)
-		}
-
-		// Fast path: an irreversible terminal already exists.
-		if existing, err := tx.FindTerminal(ctx, req.RingID); err != nil {
-			return err
-		} else if existing != nil {
-			out = *existing
-			return nil
 		}
 
 		if req.Kind != "admit" && req.Kind != "isolate" && req.Kind != "cancel" {
@@ -225,18 +223,23 @@ func (a *Arbiter) Decide(req DecisionRequest) (domain.TerminalDecision, error) {
 		if req.Kind == "admit" {
 			credential = credentialFor(req.RingID, req.Generation)
 		}
-		decision, created, err := tx.SaveTerminal(ctx, req.RingID, req.Generation, req.Kind, credential)
+		decision, _, err := tx.SaveTerminal(ctx, req.RingID, req.Generation, req.Kind, credential)
 		if err != nil {
 			return err
 		}
 		out = *decision
-		if created {
-			if _, err := tx.SaveReceipt(ctx, req.OperationID, hash, encodeDecision(out)); err != nil {
-				return err
-			}
-			return tx.AppendEvent(store.Event{Operation: req.OperationID, Kind: store.KindDecide, Payload: out})
+		// Both the winner (terminal created) and a losing competitor (existing
+		// terminal read back) record a receipt bound to their own operation id and
+		// append the decide event. The loser returns the already-committed decision
+		// rather than re-issuing a credential, yet its operation id is now bound to
+		// the decision content it observed — so a later content-tampered replay of
+		// that same operation id (e.g. the same op replayed as "isolate" after it
+		// already lost as "admit") is flagged as an idempotent-conflict instead of
+		// silently echoing the existing terminal again.
+		if _, err := tx.SaveReceipt(ctx, req.OperationID, hash, encodeDecision(out)); err != nil {
+			return err
 		}
-		return nil
+		return tx.AppendEvent(store.Event{Operation: req.OperationID, Kind: store.KindDecide, Payload: out})
 	})
 	if err != nil {
 		return domain.TerminalDecision{}, err
