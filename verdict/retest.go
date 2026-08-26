@@ -23,8 +23,10 @@ func propagate(task domain.RingTask, bindings []store.GasketBinding, source stri
 
 	n := len(task.Segments)
 	seqToIdx := map[int]int{}
+	belongsToRing := map[int]bool{}
 	for i, seg := range task.Segments {
 		seqToIdx[seg.Seq] = i
+		belongsToRing[seg.Seq] = true
 	}
 	neighbours := func(seq int) []int {
 		idx, ok := seqToIdx[seq]
@@ -42,8 +44,14 @@ func propagate(task domain.RingTask, bindings []store.GasketBinding, source stri
 	}
 
 	// Shared gasket bar batches: batch -> segment seqs bound to bars of it.
+	// Only bindings to slots within this ring's closed-loop count; bindings
+	// belonging to other rings (which may share the same batch number) must
+	// never propagate across ring boundaries.
 	batchSeqs := map[string][]int{}
 	for _, b := range bindings {
+		if !belongsToRing[b.SlotSeq] {
+			continue
+		}
 		batchSeqs[b.Batch] = append(batchSeqs[b.Batch], b.SlotSeq)
 	}
 
