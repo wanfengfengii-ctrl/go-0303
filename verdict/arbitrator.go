@@ -275,6 +275,31 @@ func (a *Arbiter) validateAdmission(ctx context.Context, tx *store.Tx, req Decis
 		return &domain.Error{Code: domain.CodeNotQualified, Operation: req.OperationID,
 			Reasons: []domain.Reason{{Code: domain.CodeNotQualified, Message: "requires two independent qualified approvers"}}}
 	}
+
+	// Enforce the pressure decay-rate gate: a ring whose compartment pressure
+	// decays faster than the locked rule permits must not be admitted, even with
+	// two qualified approvers. The decay rate is judged here against the rule
+	// threshold; trace append only validates the fixed-point arithmetic.
+	task, err := tx.FindRingTaskByID(ctx, req.RingID)
+	if err != nil {
+		return err
+	}
+	if task == nil {
+		return &domain.Error{Code: domain.CodeNotFound, Operation: req.OperationID,
+			Reasons: []domain.Reason{{Code: domain.CodeNotFound, Message: "ring not locked"}}}
+	}
+	traces, err := tx.ListTraces(ctx, req.RingID, req.Generation)
+	if err != nil {
+		return err
+	}
+	rate, err := decayRate(traces)
+	if err != nil {
+		return arithmeticErr(req.OperationID, err)
+	}
+	if rate > task.Rule.Thresholds.DecayRateMax {
+		return &domain.Error{Code: domain.CodeOutOfTolerance, Operation: req.OperationID,
+			Reasons: []domain.Reason{{Code: domain.CodeOutOfTolerance, Message: "pressure decay rate out of tolerance"}}}
+	}
 	return nil
 }
 
